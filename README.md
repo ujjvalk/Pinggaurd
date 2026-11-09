@@ -1,6 +1,6 @@
 # PingGuard
 
-Self-hosted uptime monitoring with multi-channel alerts, in the style of HetrixTools.
+Self-hosted uptime monitoring with multi-channel alerts.
 Python + SQLite, one small service, nothing to install beyond three pip packages.
 
 **Monitors:** website/API (status code + keyword), TCP port, ping, SSL certificate expiry, heartbeat (cron jobs push to a URL).
