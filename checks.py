@@ -3,6 +3,7 @@ import asyncio
 import re
 import ssl
 import time
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -11,23 +12,51 @@ HOST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def host_port(target, default=None):
-    if ":" in target:
-        host, port = target.rsplit(":", 1)
-        return host, int(port)
-    if default is None:
+    parsed = urlsplit("//" + target)
+    try:
+        port = parsed.port if parsed.port is not None else default
+        host = parsed.hostname
+    except ValueError as e:
+        raise ValueError("Invalid host or port") from e
+    if not host or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
         raise ValueError("Target must look like host:port")
-    return target, default
+    if port is None or not 1 <= port <= 65535 or target.endswith(":"):
+        raise ValueError("Port must be between 1 and 65535")
+    return host, port
 
 
 def validate(mtype, target, options):
     if mtype not in TYPES:
         raise ValueError(f"Type must be one of: {', '.join(TYPES)}")
+    numeric = {"http": {"expected_status": (0, 599)}, "ssl": {"warn_days": (0, 3650)},
+               "heartbeat": {"grace": (0, 604800)}}
+    allowed = {"http": {"expected_status", "keyword", "verify_ssl"}, "ssl": {"warn_days"},
+               "heartbeat": {"grace"}, "tcp": set(), "ping": set()}
+    if options.keys() - allowed[mtype]:
+        raise ValueError("Unknown options for monitor type")
+    for key, (low, high) in numeric.get(mtype, {}).items():
+        if key in options:
+            value = options[key]
+            if type(value) is not int or not low <= value <= high:
+                raise ValueError(f"{key} must be an integer between {low} and {high}")
+    if mtype == "http":
+        if 0 < options.get("expected_status", 0) < 100:
+            raise ValueError("expected_status must be 0 or between 100 and 599")
+        if "verify_ssl" in options and type(options["verify_ssl"]) is not bool:
+            raise ValueError("verify_ssl must be a boolean")
+        if "keyword" in options and not isinstance(options["keyword"], str):
+            raise ValueError("keyword must be a string")
+        try:
+            url = urlsplit(target)
+            port = url.port
+            if url.scheme not in ("http", "https") or not url.hostname or (port is not None and port < 1):
+                raise ValueError()
+        except ValueError as e:
+            raise ValueError("Enter a valid HTTP or HTTPS URL") from e
     if mtype == "heartbeat":
         return
     if not target:
         raise ValueError("Target is required")
-    if mtype == "http" and not target.startswith(("http://", "https://")):
-        raise ValueError("URL must start with http:// or https://")
     if mtype == "ping" and not HOST_RE.fullmatch(target):
         raise ValueError("Enter a hostname or IPv4 address")
     if mtype == "tcp":
@@ -62,6 +91,7 @@ async def check_tcp(m):
     _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), m["timeout"])
     ms = (time.perf_counter() - t0) * 1000
     writer.close()
+    await writer.wait_closed()
     return True, ms, ""
 
 
@@ -71,8 +101,10 @@ async def check_ping(m):
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), m["timeout"] + 3)
-    except asyncio.TimeoutError:
-        proc.kill()
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        if proc.returncode is None:
+            proc.kill()
+        await proc.communicate()
         raise
     if proc.returncode != 0:
         return False, None, "No ping reply"
@@ -88,6 +120,7 @@ async def check_ssl(m):
     ms = (time.perf_counter() - t0) * 1000
     cert = writer.get_extra_info("peercert")
     writer.close()
+    await writer.wait_closed()
     days = (ssl.cert_time_to_seconds(cert["notAfter"]) - time.time()) / 86400
     if days < int(m["options"].get("warn_days", 14)):
         return False, ms, f"Certificate expires in {days:.0f} days"

@@ -70,8 +70,8 @@ def _plain(ev):
 async def _post(url, **kw):
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(url, **kw)
-    if r.status_code >= 400:  # never include the URL: it may contain secrets
-        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+    if not 200 <= r.status_code < 300:  # URLs and bodies may contain secrets
+        raise RuntimeError(f"Notification provider returned HTTP {r.status_code}")
 
 
 async def _email(c, ev):

@@ -79,3 +79,18 @@ Set "Check every" to how often the job runs, and a grace period for slow runs.
 - Everything the dashboard does is available under `/api/...` with the same basic auth, e.g. `GET /api/monitors`.
 - It runs as a single process. A server watching itself can't report that the whole machine or its network is down, so run a second copy elsewhere, or send a heartbeat to an external service, to cover that case.
 - To add a channel type, add an entry to `SCHEMA` and `SENDERS` in `notifiers.py`; the dashboard form builds itself from it.
+
+## Reliability and development
+
+The database defaults to `data/pingguard.db`. Existing installations using the old
+`pingguard.db` location should set `PINGGUARD_DB` explicitly or move their database
+while the service is stopped (including any SQLite WAL/SHM files).
+
+Notification failures are retried up to three total attempts with 1s and 2s delays.
+Retries are in memory; restarting the service loses pending deliveries. A provider
+may accept a request before a timeout, so retries can occasionally duplicate alerts.
+Provider exception details are omitted from logs and API responses to protect credentials.
+
+Run regression tests with `python -m unittest discover -s tests -v` after installing
+`requirements.txt`. Local startup: set `PINGGUARD_PASSWORD` in your environment and
+run `python app.py`. The `.env` file is loaded by systemd, not by local Python startup.

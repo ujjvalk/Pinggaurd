@@ -19,7 +19,7 @@ import checks
 import notifiers
 
 BASE = Path(__file__).parent
-DB_PATH = os.getenv("PINGGUARD_DB", str(BASE / "pingguard.db"))
+DB_PATH = os.getenv("PINGGUARD_DB", str(BASE / "data" / "pingguard.db"))
 ADMIN_USER = os.getenv("PINGGUARD_USER", "admin")
 ADMIN_PASS = os.getenv("PINGGUARD_PASSWORD", "")
 RETENTION_DAYS = int(os.getenv("PINGGUARD_RETENTION_DAYS", "30"))
@@ -78,13 +78,18 @@ def make_event(status, name, target="", reason="", duration=None):
 
 async def send_one(channel, ev):
     """Send one event through one channel. Returns an error string, or None on success."""
-    try:
-        await notifiers.send(channel["type"], json.loads(channel["config"]), ev)
-        return None
-    except Exception as e:
-        err = (str(e) or type(e).__name__)[:300]
-        log.warning("channel %s (%s) failed: %s", channel["name"], channel["type"], err)
-        return err
+    for attempt in range(3):
+        try:
+            await notifiers.send(channel["type"], json.loads(channel["config"]), ev)
+            return None
+        except Exception as e:
+            # Exception text and provider responses can contain credentials.
+            err = f"Notification failed ({type(e).__name__})"
+            if attempt < 2:
+                await asyncio.sleep(2 ** attempt)
+            else:
+                log.warning("channel %s (%s): %s", channel["id"], channel["type"], err)
+                return err
 
 
 async def dispatch(monitor, ev):
@@ -100,29 +105,46 @@ async def dispatch(monitor, ev):
 
 async def record(m, ok, latency, err):
     """Store a check result, update state, and alert on DOWN / recovery."""
-    now = time.time()
-    run_sql("INSERT INTO checks(monitor_id, ts, ok, latency, error) VALUES(?,?,?,?,?)",
-            (m["id"], now, int(ok), latency, err))
-    prev = m["state"]
-    fails = 0 if ok else m["fail_count"] + 1
-    state, event = prev, None
-    if ok:
-        state = "up"
-        event = "UP" if prev == "down" else None
-    elif fails >= m["threshold"] and prev != "down":
-        state, event = "down", "DOWN"
-    run_sql("UPDATE monitors SET state=?, fail_count=?, last_check=?, last_latency=?, last_error=?, "
-            "last_change=CASE WHEN state!=? THEN ? ELSE last_change END WHERE id=?",
-            (state, fails, now, latency, err, state, now, m["id"]))
-    if event == "DOWN":
-        run_sql("INSERT INTO incidents(monitor_id, started, reason) VALUES(?,?,?)", (m["id"], now, err))
-        await dispatch(m, make_event("DOWN", m["name"], m["target"], err))
-    elif event == "UP":
-        inc = q("SELECT * FROM incidents WHERE monitor_id=? AND ended IS NULL ORDER BY id DESC LIMIT 1",
-                (m["id"],), one=True)
-        run_sql("UPDATE incidents SET ended=? WHERE monitor_id=? AND ended IS NULL", (now, m["id"]))
-        dur = fmt_duration(now - inc["started"]) if inc else None
-        await dispatch(m, make_event("UP", m["name"], m["target"], "Back to normal", dur))
+    notification = None
+    with lock:
+        execute = db.execute
+        def fetch_one(sql, args):
+            return execute(sql, args).fetchone()
+        current = fetch_one("SELECT * FROM monitors WHERE id=? AND enabled=1", (m["id"],))
+        if current is None or current["created"] != m["created"]:
+            return
+        m = dict(current)
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            now = time.time()
+            execute("INSERT INTO checks(monitor_id, ts, ok, latency, error) VALUES(?,?,?,?,?)",
+                    (m["id"], now, int(ok), latency, err))
+            prev = m["state"]
+            fails = 0 if ok else m["fail_count"] + 1
+            state, event = prev, None
+            if ok:
+                state = "up"
+                event = "UP" if prev == "down" else None
+            elif fails >= m["threshold"] and prev != "down":
+                state, event = "down", "DOWN"
+            execute("UPDATE monitors SET state=?, fail_count=?, last_check=?, last_latency=?, last_error=?, "
+                    "last_change=CASE WHEN state!=? THEN ? ELSE last_change END WHERE id=?",
+                    (state, fails, now, latency, err, state, now, m["id"]))
+            if event == "DOWN":
+                execute("INSERT INTO incidents(monitor_id, started, reason) VALUES(?,?,?)", (m["id"], now, err))
+                notification = make_event("DOWN", m["name"], m["target"], err)
+            elif event == "UP":
+                inc = fetch_one("SELECT * FROM incidents WHERE monitor_id=? AND ended IS NULL ORDER BY id DESC LIMIT 1",
+                        (m["id"],))
+                execute("UPDATE incidents SET ended=? WHERE monitor_id=? AND ended IS NULL", (now, m["id"]))
+                dur = fmt_duration(now - inc["started"]) if inc else None
+                notification = make_event("UP", m["name"], m["target"], "Back to normal", dur)
+            db.execute("COMMIT")
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+    if notification:
+        await dispatch(m, notification)
 
 
 async def check_one(row, sem, running):
@@ -141,20 +163,25 @@ async def check_one(row, sem, running):
 
 async def scheduler():
     sem, running, tasks, last_prune = asyncio.Semaphore(MAX_CONCURRENT), set(), set(), 0
-    while True:
-        now = time.time()
-        due = q("SELECT * FROM monitors WHERE enabled=1 AND last_check + "
-                "CASE WHEN type='heartbeat' THEN MIN(interval, 30) ELSE interval END <= ?", (now,))
-        for row in due:
-            if row["id"] not in running:
-                running.add(row["id"])
-                t = asyncio.create_task(check_one(row, sem, running))
-                tasks.add(t)
-                t.add_done_callback(tasks.discard)
-        if now - last_prune > 3600:
-            run_sql("DELETE FROM checks WHERE ts < ?", (now - RETENTION_DAYS * 86400,))
-            last_prune = now
-        await asyncio.sleep(2)
+    try:
+        while True:
+            now = time.time()
+            due = q("SELECT * FROM monitors WHERE enabled=1 AND last_check + "
+                    "CASE WHEN type='heartbeat' THEN MIN(interval, 30) ELSE interval END <= ?", (now,))
+            for row in due:
+                if row["id"] not in running:
+                    running.add(row["id"])
+                    t = asyncio.create_task(check_one(row, sem, running))
+                    tasks.add(t)
+                    t.add_done_callback(tasks.discard)
+            if now - last_prune > 3600:
+                run_sql("DELETE FROM checks WHERE ts < ?", (now - RETENTION_DAYS * 86400,))
+                last_prune = now
+            await asyncio.sleep(2)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @asynccontextmanager
@@ -163,8 +190,11 @@ async def lifespan(_):
         raise RuntimeError("Set PINGGUARD_PASSWORD before starting PingGuard")
     task = asyncio.create_task(scheduler())
     log.info("PingGuard started, database: %s", DB_PATH)
-    yield
-    task.cancel()
+    try:
+        yield
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 # ---------------------------------------------------------------- API
@@ -189,14 +219,14 @@ class MonitorIn(BaseModel):
     interval: int = Field(60, ge=10, le=86400)
     timeout: int = Field(10, ge=1, le=120)
     threshold: int = Field(2, ge=1, le=20)
-    options: dict = {}
-    channel_ids: list[int] = []
+    options: dict = Field(default_factory=dict)
+    channel_ids: list[int] = Field(default_factory=list)
 
 
 class ChannelIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     type: str
-    config: dict[str, str] = {}
+    config: dict[str, str] = Field(default_factory=dict)
 
 
 def monitor_out(r):
@@ -285,9 +315,16 @@ def toggle_monitor(mid: int):
 
 @api.delete("/monitors/{mid}")
 def delete_monitor(mid: int):
-    for table in ("checks", "incidents"):
-        run_sql(f"DELETE FROM {table} WHERE monitor_id=?", (mid,))
-    run_sql("DELETE FROM monitors WHERE id=?", (mid,))
+    with lock:
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            for table in ("checks", "incidents"):
+                db.execute(f"DELETE FROM {table} WHERE monitor_id=?", (mid,))
+            db.execute("DELETE FROM monitors WHERE id=?", (mid,))
+            db.execute("COMMIT")
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
     return {"ok": True}
 
 
