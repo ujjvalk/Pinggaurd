@@ -1,0 +1,24 @@
+[Unit]
+Description=PingGuard monitoring and alerting
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pingguard
+Group=pingguard
+WorkingDirectory=/opt/pingguard
+EnvironmentFile=/opt/pingguard/.env
+ExecStart=/opt/pingguard/venv/bin/uvicorn app:app --host 127.0.0.1 --port 8080
+Restart=always
+RestartSec=5
+# Hardening (CAP_NET_RAW lets the unprivileged user run ping checks)
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/pingguard/data
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

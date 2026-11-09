@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PingGuard</title>
+<style>
+:root{--bg:#eef1f4;--panel:#fbfcfd;--ink:#1c2733;--mut:#5d6b7a;--line:#d5dbe2;--acc:#0f6e6e;--up:#1f8a4c;--down:#c93a2f;--warn:#b7791f;--idle:#b8c1cc}
+@media(prefers-color-scheme:dark){:root{--bg:#12171d;--panel:#1a2129;--ink:#e6ebf0;--mut:#8f9bab;--line:#2b343e;--acc:#4fb3a9;--up:#3fb871;--down:#ef6a5e;--warn:#e0a53b;--idle:#3a4552}}
+*{box-sizing:border-box}[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1040px;margin:0 auto;padding:28px 20px 60px}
+.top{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+.brand{font-weight:650;letter-spacing:.01em;color:var(--mut)}
+h1{font-size:clamp(26px,5vw,40px);line-height:1.15;margin:6px 0 4px;font-weight:700;letter-spacing:-.02em}
+h1.ok{color:var(--up)}h1.bad{color:var(--down)}
+.sub{color:var(--mut);margin:0 0 26px}
+h2{font-size:17px;margin:34px 0 10px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:6px}
+.mon{display:grid;grid-template-columns:14px minmax(0,1.3fr) minmax(120px,1fr) 80px auto;gap:6px 14px;align-items:center;padding:12px 16px;border-top:1px solid var(--line)}
+.mon:first-child{border-top:0}
+.dot{width:12px;height:12px;border-radius:50%;background:var(--idle)}
+.up .dot{background:var(--up)}.down .dot{background:var(--down)}.paused .dot{background:var(--warn)}
+.name{font-weight:600;overflow-wrap:anywhere}.meta{color:var(--mut);font-size:13px;overflow-wrap:anywhere}
+.err{color:var(--down);font-size:13px}
+.strip{display:flex;gap:2px;align-items:flex-end;height:26px}
+.strip i{flex:1;min-width:2px;max-width:6px;height:100%;border-radius:1px;background:var(--up)}
+.strip i.f{background:var(--down)}.strip i.e{background:var(--line)}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.acts{display:flex;gap:6px;justify-content:flex-end}
+button,input,select{font:inherit;color:inherit}
+.btn{background:var(--acc);color:#fff;border:0;border-radius:5px;padding:8px 14px;cursor:pointer;font-weight:600}
+.btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line);padding:4px 10px;font-weight:500;font-size:13px}
+.btn.danger{color:var(--down)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;align-items:start}
+form{padding:16px;display:grid;gap:12px}
+label{display:grid;gap:4px;font-size:13px;color:var(--mut)}
+input,select{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:8px 10px;width:100%}
+.row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+fieldset{border:1px solid var(--line);border-radius:5px;margin:0;padding:8px 12px}
+legend{font-size:13px;color:var(--mut);padding:0 4px}
+fieldset label{display:flex;gap:8px;align-items:center;color:var(--ink);font-size:14px;padding:2px 0}
+fieldset input{width:auto}
+.hint{color:var(--mut);font-size:13px;margin:0}
+.ch{display:flex;align-items:center;gap:10px;padding:10px 16px;border-top:1px solid var(--line)}
+.ch:first-child{border-top:0}.ch .grow{flex:1;min-width:0}
+.empty{padding:18px 16px;color:var(--mut)}
+.inc{padding:10px 16px;border-top:1px solid var(--line);display:flex;gap:12px;justify-content:space-between;flex-wrap:wrap}
+.inc:first-child{border-top:0}
+code{background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:12.5px;overflow-wrap:anywhere}
+@media(max-width:700px){.mon{grid-template-columns:14px 1fr auto}.mon .strip,.mon .num{grid-column:2/4}.mon .num{text-align:left}}
+</style>
+</head>
+<body>
+<main>
+  <div class="top"><span class="brand">PingGuard</span><span class="meta" id="stamp"></span></div>
+  <h1 id="headline">Loading...</h1>
+  <p class="sub" id="sub"></p>
+
+  <div class="panel" id="mons"></div>
+
+  <div class="cols">
+    <div>
+      <h2>Add a monitor</h2>
+      <div class="panel"><form id="mf">
+        <label>Name<input name="name" required maxlength="100" placeholder="Production website"></label>
+        <label>What to check
+          <select name="type" id="mtype">
+            <option value="http">Website or API (HTTP/HTTPS)</option>
+            <option value="tcp">TCP port</option>
+            <option value="ping">Ping</option>
+            <option value="ssl">SSL certificate expiry</option>
+            <option value="heartbeat">Cron job or script (heartbeat)</option>
+          </select></label>
+        <label data-for="http tcp ping ssl">Address<input name="target" id="mtarget"></label>
+        <label data-for="http">Expected status code (0 accepts anything below 400)<input name="expected_status" type="number" value="0" min="0"></label>
+        <label data-for="http">Page must contain<input name="keyword" placeholder="optional"></label>
+        <label data-for="ssl">Alert when expiring within (days)<input name="warn_days" type="number" value="14" min="1"></label>
+        <label data-for="heartbeat">Grace period after the expected time (seconds)<input name="grace" type="number" value="60" min="0"></label>
+        <div class="row">
+          <label>Check every (s)<input name="interval" type="number" value="60" min="10"></label>
+          <label>Timeout (s)<input name="timeout" type="number" value="10" min="1"></label>
+          <label>Failures before alert<input name="threshold" type="number" value="2" min="1"></label>
+        </div>
+        <fieldset><legend>Send alerts to</legend><div id="chk"></div><p class="hint" id="chkhint"></p></fieldset>
+        <button class="btn">Add monitor</button>
+      </form></div>
+    </div>
+
+    <div>
+      <h2>Alert channels</h2>
+      <div class="panel" id="chs"></div>
+      <h2>Add a channel</h2>
+      <div class="panel"><form id="cf">
+        <label>Name<input name="__name" required maxlength="100" placeholder="On-call phone"></label>
+        <label>Type<select id="ctype"></select></label>
+        <div id="cfields" style="display:grid;gap:12px"></div>
+        <button class="btn">Add channel</button>
+      </form></div>
+    </div>
+  </div>
+
+  <h2>Recent incidents</h2>
+  <div class="panel" id="incs"></div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let types = {}, channels = [];
+
+async function api(path, method = 'GET', body) {
+  const r = await fetch('/api' + path, {method, headers: body ? {'Content-Type': 'application/json'} : {}, body: body ? JSON.stringify(body) : undefined});
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(typeof e.detail === 'string' ? e.detail : 'Request failed (check the form values)');
+  }
+  return r.json();
+}
+const ago = ts => {
+  if (!ts) return 'not yet';
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  return s < 60 ? Math.floor(s) + 's ago' : s < 3600 ? Math.floor(s / 60) + 'm ago' : s < 86400 ? Math.floor(s / 3600) + 'h ago' : Math.floor(s / 86400) + 'd ago';
+};
+const dur = s => { s = Math.round(s); return s < 60 ? s + 's' : s < 3600 ? Math.floor(s / 60) + 'm' : Math.floor(s / 3600) + 'h ' + Math.floor(s % 3600 / 60) + 'm'; };
+
+function monRow(m) {
+  const st = !m.enabled ? 'paused' : m.state;
+  const where = m.type === 'heartbeat' ? `Ping <code>${esc(location.origin)}/hb/${esc(m.token)}</code> every ${dur(m.interval)}` : esc(m.target);
+  const bars = Array.from({length: 40}, (_, i) => {
+    const v = m.recent[i - (40 - m.recent.length)];
+    return `<i class="${v === undefined ? 'e' : v ? '' : 'f'}"></i>`;
+  }).join('');
+  const status = !m.enabled ? 'Paused' : m.state === 'down' ? `<span class="err">Down: ${esc(m.last_error)}</span>` : m.state === 'up' ? 'Up' : 'Waiting for first check';
+  return `<div class="mon ${st}">
+    <span class="dot"></span>
+    <div><div class="name">${esc(m.name)}</div><div class="meta">${where}</div><div class="meta">${status}, checked ${ago(m.last_check)}</div></div>
+    <div class="strip" title="Last 40 checks">${bars}</div>
+    <div class="num">${m.uptime_24h == null ? '-' : m.uptime_24h + '%'}<div class="meta">${m.last_latency != null ? Math.round(m.last_latency) + ' ms' : '24h uptime'}</div></div>
+    <div class="acts"><button class="btn ghost" onclick="toggle(${m.id})">${m.enabled ? 'Pause' : 'Resume'}</button><button class="btn ghost danger" onclick="delMon(${m.id})">Delete</button></div>
+  </div>`;
+}
+
+async function loadMon() {
+  const [mons, incs] = await Promise.all([api('/monitors'), api('/incidents')]);
+  const down = mons.filter(m => m.enabled && m.state === 'down').length;
+  const h = $('#headline');
+  h.className = down ? 'bad' : mons.length ? 'ok' : '';
+  h.textContent = !mons.length ? 'Nothing monitored yet' : down ? `${down} of ${mons.length} monitors ${down === 1 ? 'is' : 'are'} down` : 'Everything is up';
+  $('#sub').textContent = mons.length ? `${mons.length} monitors, refreshed every 10 seconds.` : 'Add your first monitor below, then connect a channel to get alerted.';
+  $('#mons').innerHTML = mons.length ? mons.map(monRow).join('') : '<div class="empty">No monitors yet. Add one below.</div>';
+  $('#incs').innerHTML = incs.length ? incs.map(i => `<div class="inc"><span><b>${esc(i.name)}</b> <span class="meta">${esc(i.reason)}</span></span><span class="meta">${new Date(i.started * 1000).toLocaleString()}, ${i.ended ? 'lasted ' + dur(i.ended - i.started) : '<b class="err">ongoing</b>'}</span></div>`).join('') : '<div class="empty">No incidents recorded.</div>';
+  $('#stamp').textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+async function loadCh() {
+  channels = await api('/channels');
+  $('#chs').innerHTML = channels.length ? channels.map(c => `<div class="ch"><div class="grow"><div class="name">${esc(c.name)}</div><div class="meta">${esc(types[c.type]?.label || c.type)}</div></div><button class="btn ghost" onclick="testCh(${c.id}, this)">Send test</button><button class="btn ghost danger" onclick="delCh(${c.id})">Delete</button></div>`).join('') : '<div class="empty">No channels yet. Add one so alerts have somewhere to go.</div>';
+  $('#chk').innerHTML = channels.map(c => `<label><input type="checkbox" value="${c.id}">${esc(c.name)}</label>`).join('');
+  $('#chkhint').textContent = channels.length ? 'Leave all unchecked to alert every channel.' : 'Add a channel first.';
+}
+
+const toggle = async id => { await api(`/monitors/${id}/toggle`, 'POST'); loadMon(); };
+const delMon = async id => { if (confirm('Delete this monitor and its history?')) { await api(`/monitors/${id}`, 'DELETE'); loadMon(); } };
+const delCh = async id => { if (confirm('Delete this channel?')) { await api(`/channels/${id}`, 'DELETE'); loadCh(); } };
+async function testCh(id, btn) {
+  btn.textContent = 'Sending...';
+  try { await api(`/channels/${id}/test`, 'POST'); btn.textContent = 'Sent'; }
+  catch (e) { btn.textContent = 'Send test'; alert('Test failed: ' + e.message); }
+  setTimeout(() => btn.textContent = 'Send test', 3000);
+}
+
+const hints = {http: 'https://example.com/health', tcp: 'db.example.com:5432', ping: 'example.com', ssl: 'example.com or example.com:443'};
+function syncType() {
+  const t = $('#mtype').value;
+  document.querySelectorAll('#mf [data-for]').forEach(l => l.hidden = !l.dataset.for.split(' ').includes(t));
+  $('#mtarget').placeholder = hints[t] || '';
+  $('#mtarget').required = t !== 'heartbeat';
+}
+$('#mtype').onchange = syncType;
+
+$('#mf').onsubmit = async e => {
+  e.preventDefault();
+  const v = Object.fromEntries(new FormData(e.target)), options = {};
+  if (v.type === 'http') { options.expected_status = +v.expected_status || 0; options.keyword = v.keyword; }
+  if (v.type === 'ssl') options.warn_days = +v.warn_days || 14;
+  if (v.type === 'heartbeat') options.grace = +v.grace || 60;
+  const channel_ids = [...document.querySelectorAll('#chk input:checked')].map(i => +i.value);
+  try {
+    await api('/monitors', 'POST', {name: v.name, type: v.type, target: (v.target || '').trim(), interval: +v.interval, timeout: +v.timeout, threshold: +v.threshold, options, channel_ids});
+    e.target.reset(); syncType(); loadMon();
+  } catch (err) { alert(err.message); }
+};
+
+function chFields() {
+  const t = types[$('#ctype').value];
+  $('#cfields').innerHTML = t.fields.map(f => `<label>${esc(f.label)}<input name="${esc(f.key)}" type="${f.secret ? 'password' : 'text'}" value="${esc(f.default)}" ${f.required ? 'required' : ''} autocomplete="off"></label>`).join('') + `<p class="hint">${esc(t.help)}</p>`;
+}
+$('#ctype').onchange = chFields;
+$('#cf').onsubmit = async e => {
+  e.preventDefault();
+  const v = Object.fromEntries(new FormData(e.target)), name = v.__name;
+  delete v.__name;
+  try { await api('/channels', 'POST', {name, type: $('#ctype').value, config: v}); e.target.reset(); chFields(); loadCh(); }
+  catch (err) { alert(err.message); }
+};
+
+(async () => {
+  types = await api('/channel-types');
+  $('#ctype').innerHTML = Object.entries(types).map(([k, t]) => `<option value="${k}">${esc(t.label)}</option>`).join('');
+  syncType(); chFields();
+  await loadCh(); await loadMon();
+  setInterval(() => loadMon().catch(() => {}), 10000);
+})();
+</script>
+</body>
+</html>
